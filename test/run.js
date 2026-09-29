@@ -8,13 +8,21 @@ const context = { JSON, Math, Number, String, isFinite, parseFloat }
 vm.createContext(context)
 vm.runInContext(source, context)
 
+function panel_src() {
+  return fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+}
+
 function equal(actual, expected, message) {
   if (actual !== expected) {
     throw new Error(`${message}: expected ${expected}, got ${actual}`)
   }
 }
 
-equal(context.clampPercent(20), 50, "lower clamp")
+equal(context.clampPercent(20), 20, "20% is allowed")
+equal(context.clampPercent(0), 1, "lower clamp")
+equal(context.clampPercent(0.2), 1, "sub-1% clamps to 1%")
+equal(context.wheelStep(10, -1), 1, "fine step at the low end")
+equal(context.wheelStep(50, -1), 2.5, "coarse step above 10%")
 equal(context.clampPercent(104), 100, "upper clamp")
 equal(context.clampPercent(87.6), 87.5, "half-percent rounding")
 equal(context.formatPercent(98.5), "98.5%", "decimal percentage")
@@ -103,6 +111,43 @@ equal(
   null,
   "missing default-opacity rule is reported"
 )
+
+// Unfocused-only theme parsing and Lua call args.
+const unfocused = context.parseThemeUnfocusedSettings(
+  "",
+  'o.window({ tag = "default-opacity" }, { opacity = "0.985 0.96" })',
+  ""
+)
+equal(unfocused.active, 98.5, "theme focused opacity")
+equal(unfocused.inactive, 96, "theme unfocused opacity")
+equal(unfocused.fullscreen, 100, "two-value rule leaves fullscreen solid")
+const themed = context.parseThemeUnfocusedSettings(
+  "hl.config({ decoration = { inactive_opacity = 0.5 } })",
+  'o.window({ tag = "default-opacity" }, { opacity = "0.985 0.96" })',
+  'hl.window_rule({ match = { tag = "default-opacity" }, opacity = "0.9 override 0.8 0.95 override" })'
+)
+equal(themed.active, 90, "theme override active is absolute")
+equal(themed.inactive, 40, "non-override inactive is multiplied by inactive_opacity")
+equal(themed.fullscreen, 95, "theme fullscreen value is read")
+equal(context.parseThemeUnfocusedSettings("", "", ""), null, "missing rule is reported")
+const unfocusedCall = context.renderLuaCall("/tmp/Omapaque.lua", "apply", 25, 98.5, 100)
+if (!unfocusedCall.includes("plugin.apply(0.25, 0.985, 1)"))
+  throw new Error("apply must pass unfocused, focused and fullscreen values: " + unfocusedCall)
+
+// Focused slider argument building.
+const defaults = context.applyValues(false, 96, 96, false, 98.5, 98.5, 100)
+equal(defaults.join(","), "96,98.5,100,100,98.5", "untouched sliders keep theme and browser defaults")
+const both = context.applyValues(true, 25, 96, true, 70, 98.5, 100)
+equal(both.join(","), "25,70,100,70,25", "moved sliders apply to normal windows and browsers")
+const focusedOnly = context.applyValues(false, 96, 96, true, 70, 98.5, 100)
+equal(focusedOnly.join(","), "96,70,100,70,98.5", "focused slider alone leaves unfocused at theme values")
+const applyCall = context.renderLuaApply("/tmp/Omapaque.lua", both)
+if (!applyCall.includes("plugin.apply(0.25, 0.7, 1, 0.7, 0.25)"))
+  throw new Error("renderLuaApply must pass all five values: " + applyCall)
+if (!panel_src().includes("function setFocusedOpacity(")) throw new Error("panel must expose the focused slider")
+if (!panel_src().includes("root.themeReadPending = true"))
+  throw new Error("startup must wait for host settings before reading saved state")
+if (!panel_src().includes('focusSection === "focused"')) throw new Error("focused slider must be keyboard reachable")
 
 const opaque = context.renderLuaCall("/tmp/Omapaque.lua", "apply", 100)
 if (!opaque.includes('loadfile("/tmp/Omapaque.lua")')) throw new Error("Lua module path must be quoted")
